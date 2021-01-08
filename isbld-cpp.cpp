@@ -14,7 +14,7 @@
 #define SEC0_PROJ_NAME L"project_name"
 #define SEC0_RAR L"winrar"
 
-typedef struct _PARAM
+struct PARAM
 {
     std::wstring compiler;
     std::wstring rulfiles;
@@ -48,7 +48,7 @@ typedef struct _PARAM
             winrar.c_str()
         );
     }
-} PARAM, * PPARAM;
+};
 
 void remove_last_back_slash(std::wstring& path)
 {
@@ -98,6 +98,31 @@ bool query_app_path(const std::wstring& id, const std::wstring& valuename, REGSA
     return ret;
 }
 
+bool gen_winrar_script(const std::wstring& curr)
+{
+    printf("gen_winrar_script()\n");
+
+    std::wstring script_txt = curr + L"\\Script.txt";
+    if (PathFileExistsW(script_txt.c_str()))
+        return true;
+
+    // Create Script.txt for WinRAR
+    FILE* f = NULL;
+    errno_t err = _wfopen_s(&f, script_txt.c_str(), L"w+");
+    if (NULL == f)
+    {
+        printf("_wfopen_s failed\n");
+        return false;
+    }
+
+    std::string script = "Title=Install\nSilent=1\nOverwrite=1\nSetup=Setup.exe\nTempMode";
+
+    fwrite(script.c_str(), script.length(), 1, f);
+    fclose(f);
+
+    return true;
+}
+
 bool config_ok(std::wstring& config, std::wstring& is, std::wstring& winrar)
 {
     WCHAR path[MAX_PATH] = { 0 };
@@ -105,11 +130,51 @@ bool config_ok(std::wstring& config, std::wstring& is, std::wstring& winrar)
 
     config = path;
     config = config.substr(0, config.find_last_of(L".")) + L".ini";
-    printf("%S\n", config.c_str());
+
+    std::wstring curr;
+    get_current_dir(curr);
 
     if (PathFileExistsW(config.c_str()))
     {
-        // return true;
+        // Do some checks on the validity of the file content
+        WCHAR installshield[MAX_BUFFER] = { 0 };
+        WCHAR project_home[MAX_BUFFER] = { 0 };
+        WCHAR project_name[MAX_BUFFER] = { 0 };
+        WCHAR winrar[MAX_BUFFER] = { 0 };
+
+        GetPrivateProfileStringW(SEC0, SEC0_IS, L"", installshield, MAX_BUFFER, config.c_str());
+        if (!PathFileExistsW(installshield))
+        {
+            printf("%S cannot be found\n", installshield);
+            return false;
+        }
+
+        GetPrivateProfileStringW(SEC0, SEC0_PROJ_NAME, L"", project_name, MAX_BUFFER, config.c_str());
+        if (!wcslen(project_name))
+        {
+            printf("%S cannot be empty\n", SEC0_PROJ_NAME);
+            return false;
+        }
+
+        GetPrivateProfileStringW(SEC0, SEC0_PROJ_HOME, L"", project_home, MAX_BUFFER, config.c_str());
+        if (!wcslen(project_home))
+        {
+            // Use current directory and check *.ism if exists
+            std::wstring project_ism = curr + L"\\" + project_name;
+            if (!PathFileExistsW(project_ism.c_str()))
+            {
+                printf("%S cannot be found in %S\n", project_ism.c_str(), curr.c_str());
+                return false;
+            }
+        }
+
+        GetPrivateProfileStringW(SEC0, SEC0_RAR, L"", winrar, MAX_BUFFER, config.c_str());
+        if (PathFileExistsW(winrar))
+        {
+            gen_winrar_script(curr);
+        }
+
+        return true;
     }
 
     bool ret = query_app_path(L"{BE32FC13-21DA-4BE0-9E8F-25685F2DC6B5}",
@@ -117,7 +182,7 @@ bool config_ok(std::wstring& config, std::wstring& is, std::wstring& winrar)
     if (!ret)
     {
         printf("InstallShield cannot be found\n");
-        // return -1;
+        return false;
     }
     printf("InstallShield found in: \"%S\"\n", is.c_str());
 
@@ -130,10 +195,12 @@ bool config_ok(std::wstring& config, std::wstring& is, std::wstring& winrar)
         if (!ret)
         {
             printf("WinRAR cannot be found\n");
-            // return -1;
+            // return false;
         }
     }
-    // printf("WinRAR.exe found in: \"%S\"\n", winrar.c_str());
+
+    if (!winrar.empty())
+        gen_winrar_script(curr);
 
     // Create a blank file
     FILE* f = NULL;
@@ -264,6 +331,7 @@ bool compile(const PARAM& param)
     cmd += param.definitions;
     cmd += L" ";
     cmd += param.switches;
+    cmd += L" -dISINCLUDE_NO_WINAPI_H";
 
     return run_cmd(cmd.c_str());
 }
@@ -284,15 +352,23 @@ bool compress_allin1(const PARAM& param)
     std::wstring curr;
     get_current_dir(curr);
 
+    std::wstring script_txt = curr + L"\\Script.txt";
+    if (!PathFileExistsW(param.winrar.c_str()))
+        return false;
+
     std::wstring cmd = L"\"";
     cmd += param.winrar;
     cmd += L"\" a \"";
     cmd += param.disk1;
     cmd += L".exe\" \"";
     cmd += param.disk1;
-    cmd += L"\\*.*\" -ep -sfx -z\"";
-    cmd += curr;
-    cmd += L"\\Script.txt\"";
+    cmd += L"\\*.*\" -ep -sfx";
+    if (PathFileExistsW(script_txt.c_str()))
+    {
+        cmd += L" -z\"";
+        cmd += script_txt;
+        cmd += L"\"";
+    }
 
     return run_cmd(cmd.c_str());
 }
